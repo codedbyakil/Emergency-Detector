@@ -1,0 +1,245 @@
+<!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Emergency Detector Pro</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0a0f1c;
+      color: #fff;
+      font-family: 'Segoe UI', sans-serif;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px;
+    }
+    h1 {
+      margin: 10px 0;
+      font-size: 2em;
+      color: #00eaff;
+      text-shadow: 1px 1px 3px rgba(0,255,255,0.2);
+    }
+    .video-box {
+      position: relative;
+      width: 100%;
+      max-width: 640px; /* Increased from 420px to 640px */
+      border-radius: 12px;
+      overflow: hidden;
+      background: #1a1f2e;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+    }
+    #video, #canvas {
+      width: 100%;
+      display: block;
+    }
+    #canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #status {
+      margin-top: 15px;
+      font-size: 1.2em;
+      padding: 12px;
+      background: #1e2a3a;
+      border-radius: 10px;
+      width: 100%;
+      max-width: 640px; /* Increased to match video box */
+    }
+    .btn {
+      padding: 12px 24px;
+      font-size: 1.1em;
+      border-radius: 8px;
+      margin: 12px 6px;
+      border: none;
+      cursor: pointer;
+      transition: 0.3s;
+    }
+    #startBtn {
+      background: linear-gradient(to right, #00c6ff, #0072ff);
+      color: white;
+    }
+    #startBtn:hover {
+      background: linear-gradient(to right, #0072ff, #00c6ff);
+    }
+    #cancelBtn {
+      background: #e53935;
+      color: white;
+      display: none;
+    }
+    #cancelBtn:hover {
+      background: #c62828;
+    }
+    #countdown {
+      font-size: 1.3em;
+      color: #ffc107;
+      margin-top: 10px;
+      font-weight: bold;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>⚠ Emergency Detector Pro</h1>
+  <div class="video-box">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas"></canvas>
+  </div>
+  <div id="status">Waiting to start...</div>
+  <div id="countdown"></div>
+  <div>
+    <button id="startBtn" class="btn">▶ Start Detection</button>
+    <button id="cancelBtn" class="btn">❌ Cancel Emergency</button>
+  </div>
+  <audio id="siren" src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg" preload="auto"></audio>  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusBox = document.getElementById('status');
+    const siren = document.getElementById('siren');
+    const startBtn = document.getElementById('startBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+    const countdown = document.getElementById('countdown');
+
+    let detector, emergencyTimeout;
+    let sent = false;
+    const TOKEN = "7387769613:AAFVD9hvYXIreESYAztPjLi3Aj4rxorpRbA";
+    const CHAT_IDS = ["7025969591", "6011890368"];
+
+    const NECK_DIST = 70, CHEST_DIST = 50;
+
+    function getPart(pts, name) {
+      const p = pts.find(p => p.name === name);
+      return p && p.score > 0.3 ? p : null;
+    }
+
+    function dist(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function drawBox(p, color) {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(p.x - 15, p.y - 15, 30, 30);
+    }
+
+    function isNear(a, b, d) {
+      return a && b && dist(a, b) < d;
+    }
+
+    function detectEmergency(kp) {
+      const lw = getPart(kp, 'left_wrist');
+      const rw = getPart(kp, 'right_wrist');
+      const ls = getPart(kp, 'left_shoulder');
+      const rs = getPart(kp, 'right_shoulder');
+      const nose = getPart(kp, 'nose');
+
+      if (!(ls && rs && nose)) return "Analyzing...";
+
+      const neck = { x: (ls.x + rs.x + nose.x)/3, y: (ls.y + rs.y + nose.y)/3 };
+      const chest = { x: (ls.x + rs.x)/2, y: (ls.y + rs.y)/2 + 30 };
+
+      let isChoking = false, isHeart = false;
+      if (lw) {
+        if (isNear(lw, neck, NECK_DIST)) { isChoking = true; drawBox(lw, 'red'); }
+        else if (isNear(lw, chest, CHEST_DIST)) { isHeart = true; drawBox(lw, 'green'); }
+      }
+      if (rw) {
+        if (isNear(rw, neck, NECK_DIST)) { isChoking = true; drawBox(rw, 'red'); }
+        else if (isNear(rw, chest, CHEST_DIST)) { isHeart = true; drawBox(rw, 'green'); }
+      }
+
+      if (isChoking) return "Choking 🚨";
+      if (isHeart) return "Heart Attack 🚨";
+      return "No Emergency";
+    }
+
+    function sendTelegram(msg, loc = null) {
+      CHAT_IDS.forEach(id => {
+        fetch(`https://api.telegram.org/bot${TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: id, text: msg })
+        });
+        if (loc) {
+          fetch(`https://api.telegram.org/bot${TOKEN}/sendLocation`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: id, latitude: loc.lat, longitude: loc.lon })
+          });
+        }
+      });
+    }
+
+    function triggerEmergency(type) {
+      if (sent) return;
+      sent = true;
+      countdown.style.display = 'block';
+      let t = 5;
+      countdown.textContent = `Sending emergency in ${t}s...`;
+      siren.play();
+      cancelBtn.style.display = 'inline-block';
+
+      const timer = setInterval(() => {
+        t--;
+        if (t > 0) countdown.textContent = `Sending emergency in ${t}s...`;
+        else {
+          clearInterval(timer);
+          countdown.style.display = 'none';
+          navigator.geolocation.getCurrentPosition(pos => {
+            sendTelegram(`🚨 ${type} detected!`, {
+              lat: pos.coords.latitude, lon: pos.coords.longitude
+            });
+          }, () => {
+            sendTelegram(`🚨 ${type} detected! Location not available.`);
+          });
+          setTimeout(() => { sent = false; }, 10000);
+        }
+      }, 1000);
+    }
+
+    function cancelEmergency() {
+      siren.pause();
+      siren.currentTime = 0;
+      countdown.style.display = 'none';
+      statusBox.textContent = "Emergency cancelled ✅";
+      cancelBtn.style.display = 'none';
+      sent = false;
+    }
+
+    async function detectLoop() {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const poses = await detector.estimatePoses(video);
+      if (poses.length > 0) {
+        const result = detectEmergency(poses[0].keypoints);
+        statusBox.textContent = result;
+        if (result.includes("\ud83d\udea8")) triggerEmergency(result);
+      }
+      requestAnimationFrame(detectLoop);
+    }
+
+    async function start() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      await new Promise(res => video.onloadedmetadata = res);
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet);
+      detectLoop();
+    }
+
+    startBtn.onclick = () => {
+      siren.load(); siren.play().catch(() => {}); siren.pause();
+      startBtn.style.display = "none";
+      start();
+    };
+
+    cancelBtn.onclick = cancelEmergency;
+  </script></body>
+</html>
